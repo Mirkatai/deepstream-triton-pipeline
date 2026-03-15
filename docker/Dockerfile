@@ -1,17 +1,22 @@
 # ============================================================
-# Recommended base: DeepStream 6.4 on NGC
-# Why 6.4?
-#   - Python bindings (pyds) are stable and well-documented
-#   - nvv4l2decoder / nvv4l2h264enc are mature
-#   - Compatible with Triton 23.10 (same CUDA 12.2)
-#   - GStreamer 1.20 — nvmultistreamtiler, nvdsosd work reliably
-#   - CUDA 12.2 + cuDNN 8.9 (matches CuPy 12.x)
+# DeepStream 8.0 + Triton 25.03 — Blackwell / x86 dGPU
+# ============================================================
+# Why DeepStream 8.0?
+#   - First release with official Blackwell GPU support
+#   - Paired with Triton 25.03 (CUDA 12.8, TensorRT 10.9)
+#   - GStreamer 1.20+ with nvdsdynamicsrcbin (dynamic stream add)
+#   - Python bindings (pyds) stable, pyservicemaker available
+#   - Supports GB200, RTX 50xx, H100, A100, T4 all in one image
 #
-# Alternative: DeepStream 7.0 (if you need NvDRM / RTSP 2.0 support)
-#   nvcr.io/nvidia/deepstream:7.0-gc-triton-devel
+# NVIDIA Driver requirement: 570.133.20 or later
 # ============================================================
 
-FROM nvcr.io/nvidia/deepstream:6.4-gc-triton-devel
+FROM nvcr.io/nvidia/deepstream:8.0-gc-triton-devel
+
+# --- DS 8.0 requires extra GStreamer plugins for MP4/audio ---
+# Run the official script that installs gstreamer1.0-libav,
+# gstreamer1.0-plugins-good/bad/ugly etc.
+RUN /opt/nvidia/deepstream/deepstream/user_additional_install.sh || true
 
 # --- System deps ---
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -24,26 +29,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgirepository1.0-dev \
     gcc \
     curl \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Python packages ---
 COPY requirements.txt /tmp/requirements.txt
 RUN pip3 install --no-cache-dir -r /tmp/requirements.txt
 
-# --- CuPy for CUDA 12 ---
+# --- CuPy for CUDA 12.8 (Blackwell / DS 8.0 stack) ---
 RUN pip3 install --no-cache-dir cupy-cuda12x
 
 # --- DeepStream Python bindings ---
-# Already included in the gc-triton-devel image at:
-# /opt/nvidia/deepstream/deepstream/lib/pyds.so
+# In DS 8.0 the .whl is at /opt/nvidia/deepstream/deepstream/lib/
 RUN pip3 install \
     /opt/nvidia/deepstream/deepstream/lib/pyds*.whl 2>/dev/null || \
-    echo "pyds wheel not found, using .so directly"
+    echo "pyds wheel not found, using .so path directly"
 
-# --- Set Python path for pyds ---
+# --- Environment ---
 ENV PYTHONPATH="${PYTHONPATH}:/opt/nvidia/deepstream/deepstream/lib"
 ENV GST_PLUGIN_PATH="/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
 ENV LD_LIBRARY_PATH="/opt/nvidia/deepstream/deepstream/lib:${LD_LIBRARY_PATH}"
+# Required for video driver capabilities (encoder/decoder) in DS 8.0
+ENV NVIDIA_DRIVER_CAPABILITIES="${NVIDIA_DRIVER_CAPABILITIES},video"
 ENV DISPLAY=:0
 
 # --- Copy application ---

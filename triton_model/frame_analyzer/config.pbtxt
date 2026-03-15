@@ -1,11 +1,13 @@
 # Triton model config for frame_analyzer
-# Python backend — runs model.py
+# Python backend — Triton 25.03 / DeepStream 8.0 compatible
+# Blackwell GPU supported via CUDA 12.8 + TensorRT 10.9
 
 name: "frame_analyzer"
 backend: "python"
-max_batch_size: 0          # disable batching — we handle per-stream manually
+max_batch_size: 0          # disabled — sequence batcher controls batching
 
-# Keep one instance per GPU (add more for parallel streams)
+# Two instances per GPU for parallel stream inference
+# Increase count for more simultaneous streams
 instance_group [
   {
     count: 2
@@ -18,7 +20,7 @@ input [
   {
     name: "input_frame"
     data_type: TYPE_UINT8
-    dims: [ -1, -1, 3 ]    # H x W x C (dynamic)
+    dims: [ -1, -1, 3 ]    # H x W x C (dynamic shape)
   }
 ]
 
@@ -26,11 +28,12 @@ output [
   {
     name: "overlay_data"
     data_type: TYPE_FP32
-    dims: [ -1, 6 ]        # N detections x [x1,y1,x2,y2,class_id,conf]
+    dims: [ -1, 6 ]        # N detections x [x1, y1, x2, y2, class_id, conf]
   }
 ]
 
-# Sequence batcher ensures frames from same stream arrive IN ORDER
+# Sequence Batcher — guarantees per-stream frame ORDER
+# sequence_id maps 1:1 to stream_id in the pipeline (stream_id + 1)
 sequence_batching {
   max_sequence_idle_microseconds: 5000000
   control_input [
@@ -74,11 +77,11 @@ sequence_batching {
   oldest {
     max_candidate_sequences: 32
     preferred_batch_size: [ 1, 2, 4 ]
-    max_queue_delay_microseconds: 5000   # 5ms max wait to form a batch
+    max_queue_delay_microseconds: 5000
   }
 }
 
-# Model warmup — avoids cold-start latency on first frame
+# Warmup — eliminates cold-start latency on first real frame
 model_warmup [
   {
     name: "warmup_batch"
