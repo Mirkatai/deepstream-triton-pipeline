@@ -1,0 +1,79 @@
+version: "3.9"
+
+# ============================================================
+# Run with:  docker-compose up
+# Requirements: nvidia-docker2, GPU with CUDA 12.x
+# ============================================================
+
+services:
+
+  # ---- Triton Inference Server ----
+  triton:
+    image: nvcr.io/nvidia/tritonserver:23.10-py3
+    # Why 23.10? — matches CUDA 12.2 used by DeepStream 6.4
+    #              Python backend + CuPy 12.x support
+    #              Sequence batcher is stable in this version
+    container_name: triton
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+    ports:
+      - "8000:8000"   # HTTP
+      - "8001:8001"   # gRPC  (used by pipeline)
+      - "8002:8002"   # Metrics (Prometheus)
+    volumes:
+      - ./triton_model:/models
+      - triton_cache:/opt/tritonserver/caches
+    command: >
+      tritonserver
+        --model-repository=/models
+        --backend-config=python,shm-region-prefix-name=triton_
+        --backend-config=python,shm-default-byte-size=16777216
+        --model-control-mode=poll
+        --repository-poll-secs=30
+        --grpc-max-message-size=268435456
+        --log-verbose=0
+        --metrics-interval-ms=2000
+    shm_size: "2gb"
+    ulimits:
+      memlock: -1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v2/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ---- DeepStream Pipeline ----
+  deepstream:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: deepstream_pipeline
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video,display
+      - DISPLAY=${DISPLAY:-:0}
+      - TRITON_URL=triton:8001
+    network_mode: host          # needed for RTSP server to be accessible
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ./videos:/data/videos:ro     # mount local video files here
+      - ./configs:/app/configs:ro
+    depends_on:
+      triton:
+        condition: service_healthy
+    restart: unless-stopped
+    command: >
+      python3 main.py
+        --sources rtsp://192.168.1.100:554/stream1 /data/videos/test1.mp4
+        --triton-url triton:8001
+        --output-port 8554
+    privileged: false
+    cap_add:
+      - SYS_PTRACE      # needed by nvml for GPU monitoring
+
+volumes:
+  triton_cache:
